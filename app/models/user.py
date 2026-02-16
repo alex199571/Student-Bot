@@ -18,11 +18,17 @@ class User(Base):
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     month_key: Mapped[str] = mapped_column(String(7), default="1970-01", nullable=False)
+    day_key: Mapped[str] = mapped_column(String(10), default="1970-01-01", nullable=False)
     monthly_requests_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     monthly_tokens_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     monthly_images_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     monthly_photo_analyses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     monthly_long_texts_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_requests_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_images_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_photo_analyses_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    daily_long_texts_used: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    pending_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bonus_image_credits: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False)

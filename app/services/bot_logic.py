@@ -2,7 +2,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.i18n import FALLBACK_LANGUAGE, SUPPORTED_LANGUAGES, t
-from app.db.redis import redis_client
 from app.repositories.query_log_repo import QueryLogRepository
 from app.repositories.user_repo import UserRepository
 from app.schemas.telegram import CallbackQuery, TelegramMessage, TelegramPhotoSize, TelegramUpdate
@@ -129,7 +128,7 @@ class BotService:
             return
 
         if text.startswith("/start"):
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
             await self._handle_start(message.chat.id, user)
             await self.db.commit()
             return
@@ -140,13 +139,13 @@ class BotService:
             return
 
         if text.startswith("/cancel"):
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
             await self.telegram_api.send_message(chat_id=message.chat.id, text=t("mode_cancelled", user.language))
             await self.db.commit()
             return
 
         if is_menu_text(text, user.language):
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
 
         if text == t("menu_language", user.language):
             await self.telegram_api.send_message(
@@ -161,7 +160,7 @@ class BotService:
             if get_plan(user).name == "free":
                 await self.telegram_api.send_message(chat_id=message.chat.id, text=t("long_text_paid_only", user.language))
             else:
-                await set_pending_action(user.telegram_id, "await_long_text_input")
+                await set_pending_action(user, "await_long_text_input")
                 await self.telegram_api.send_message(chat_id=message.chat.id, text=t("request_long_text", user.language))
             await self.db.commit()
             return
@@ -198,22 +197,22 @@ class BotService:
             return
 
         if text == t("menu_photo_analysis", user.language):
-            await set_pending_action(user.telegram_id, "await_photo_upload")
+            await set_pending_action(user, "await_photo_upload")
             await self.telegram_api.send_message(chat_id=message.chat.id, text=t("photo_analysis_prompt_request", user.language))
             await self.db.commit()
             return
 
-        pending_action = await get_pending_action(user.telegram_id)
+        pending_action = await get_pending_action(user)
         if text and pending_action in {"await_explain_topic_input", "await_solve_problem_input", "await_short_summary_input", "await_long_text_input"}:
             action = pending_action.replace("await_", "").replace("_input", "")
             await self._run_llm_action(chat_id=message.chat.id, user=user, action=action, user_input=text)
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
             await self.db.commit()
             return
 
         if pending_action == "await_image_prompt":
             await self._run_image_action(chat_id=message.chat.id, user=user, image_prompt=text)
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
             await self.db.commit()
             return
 
@@ -230,7 +229,7 @@ class BotService:
                 photo_sizes=message.photo,
                 user_prompt=caption or t("menu_photo_analysis", user.language),
             )
-            await clear_pending_action(user.telegram_id)
+            await clear_pending_action(user)
             await self.db.commit()
             return
 
@@ -252,7 +251,7 @@ class BotService:
             await self.telegram_api.send_message(chat_id=chat_id, text=t("image_paid_only", user.language))
             return
 
-        await set_pending_action(user.telegram_id, "await_image_prompt")
+        await set_pending_action(user, "await_image_prompt")
         await self.telegram_api.send_message(chat_id=chat_id, text=t("image_prompt_request", user.language))
 
     async def _start_text_action_flow(self, chat_id: int, user, action: str) -> None:
@@ -271,7 +270,7 @@ class BotService:
 
         request_key = key_map.get(action, "request_explain_topic")
         pending_value = pending_map.get(action, "await_explain_topic_input")
-        await set_pending_action(user.telegram_id, pending_value)
+        await set_pending_action(user, pending_value)
         await self.telegram_api.send_message(chat_id=chat_id, text=t(request_key, user.language))
 
     async def _run_llm_action(self, chat_id: int, user, action: str, user_input: str) -> None:
@@ -280,7 +279,7 @@ class BotService:
 
         long_text_prechecked = False
         if action == "long_text":
-            long_text_limit = await precheck_and_consume_long_text_request(redis_client, user)
+            long_text_limit = await precheck_and_consume_long_text_request(user)
             if not long_text_limit.allowed:
                 if long_text_limit.reason == "long_text_daily":
                     await self.telegram_api.send_message(chat_id=chat_id, text=t("long_text_daily_limit", user.language))
@@ -303,11 +302,11 @@ class BotService:
             long_text_prechecked = True
 
         estimated_input_tokens = self.llm.estimate_tokens(prompt_for_log)
-        limit_result = await precheck_and_consume_request(redis_client, user, estimated_input_tokens)
+        limit_result = await precheck_and_consume_request(user, estimated_input_tokens)
 
         if not limit_result.allowed:
             if action == "long_text" and long_text_prechecked:
-                await rollback_long_text_request(redis_client, user)
+                await rollback_long_text_request(user)
             if limit_result.reason == "daily":
                 await self.telegram_api.send_message(chat_id=chat_id, text=t("limit_reached_daily", user.language))
                 status = "limit_daily"
@@ -345,9 +344,9 @@ class BotService:
                 total_tokens=llm_result.total_tokens,
             )
         except Exception as exc:
-            await rollback_request(redis_client, user)
+            await rollback_request(user)
             if action == "long_text" and long_text_prechecked:
-                await rollback_long_text_request(redis_client, user)
+                await rollback_long_text_request(user)
             await self.logs.create(
                 telegram_id=user.telegram_id,
                 action=action,
@@ -362,7 +361,7 @@ class BotService:
                 pass
 
     async def _run_image_action(self, chat_id: int, user, image_prompt: str) -> None:
-        limit_result = await precheck_and_consume_image_request(redis_client, user)
+        limit_result = await precheck_and_consume_image_request(user)
         if not limit_result.allowed:
             if limit_result.reason == "image_plan":
                 await self.telegram_api.send_message(chat_id=chat_id, text=t("image_paid_only", user.language))
@@ -395,7 +394,7 @@ class BotService:
                 status="ok",
             )
         except Exception as exc:
-            await rollback_image_request(redis_client, user, used_bonus_credit=limit_result.used_bonus_credit)
+            await rollback_image_request(user, used_bonus_credit=limit_result.used_bonus_credit)
             await self.logs.create(
                 telegram_id=user.telegram_id,
                 action="image_generate",
@@ -417,7 +416,7 @@ class BotService:
         user_prompt: str,
     ) -> None:
         estimated_input_tokens = self.llm.estimate_tokens(user_prompt) + 300
-        request_limit = await precheck_and_consume_request(redis_client, user, estimated_input_tokens)
+        request_limit = await precheck_and_consume_request(user, estimated_input_tokens)
         if not request_limit.allowed:
             if request_limit.reason == "daily":
                 await self.telegram_api.send_message(chat_id=chat_id, text=t("limit_reached_daily", user.language))
@@ -432,9 +431,9 @@ class BotService:
             )
             return
 
-        photo_limit = await precheck_and_consume_photo_analysis_request(redis_client, user)
+        photo_limit = await precheck_and_consume_photo_analysis_request(user)
         if not photo_limit.allowed:
-            await rollback_request(redis_client, user)
+            await rollback_request(user)
             if photo_limit.reason == "photo_daily":
                 await self.telegram_api.send_message(chat_id=chat_id, text=t("photo_analysis_daily_limit", user.language))
             else:
@@ -471,8 +470,8 @@ class BotService:
                 total_tokens=llm_result.total_tokens,
             )
         except Exception as exc:
-            await rollback_photo_analysis_request(redis_client, user)
-            await rollback_request(redis_client, user)
+            await rollback_photo_analysis_request(user)
+            await rollback_request(user)
             await self.logs.create(
                 telegram_id=user.telegram_id,
                 action="photo_analysis",
@@ -503,10 +502,10 @@ class BotService:
 
     async def _send_usage(self, chat_id: int, user) -> None:
         plan = get_plan(user)
-        daily_usage = await get_daily_usage(redis_client, user.telegram_id)
-        daily_image_usage = await get_daily_image_usage(redis_client, user.telegram_id)
-        daily_photo_usage = await get_daily_photo_analysis_usage(redis_client, user.telegram_id)
-        daily_long_text_usage = await get_daily_long_text_usage(redis_client, user.telegram_id)
+        daily_usage = await get_daily_usage(user)
+        daily_image_usage = await get_daily_image_usage(user)
+        daily_photo_usage = await get_daily_photo_analysis_usage(user)
+        daily_long_text_usage = await get_daily_long_text_usage(user)
 
         text = t("usage_text", user.language).format(
             plan=user.plan,

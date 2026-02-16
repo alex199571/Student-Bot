@@ -4,7 +4,6 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.db.redis import redis_client
 from app.db.session import get_db
 from app.repositories.query_log_repo import QueryLogRepository
 from app.repositories.user_repo import UserRepository
@@ -162,7 +161,7 @@ async def admin_reset_limits(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     if scope in {"daily", "all"}:
-        await reset_daily_limits(redis_client, user.telegram_id)
+        reset_daily_limits(user)
 
     if scope in {"monthly", "all"}:
         reset_monthly_limits(user)

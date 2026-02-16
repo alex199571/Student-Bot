@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     database_url: str
-    redis_url: str
+    redis_url: str = ""
 
     telegram_bot_token: str
     telegram_webhook_secret: str
